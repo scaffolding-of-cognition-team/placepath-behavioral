@@ -1,0 +1,697 @@
+---
+title: "placepath_v2_adult_behavioral"
+format: html
+editor: visual
+---
+
+## Load libraries
+
+```{r setup, include = FALSE}
+library(tidyr)
+suppressPackageStartupMessages(library(dplyr))
+library(ggplot2)
+library(stringr)
+library(lubridate)
+
+# Set working directory 
+getwd()
+```
+
+## Load the data
+
+```{r Load the Data}
+df.data <- read.csv('../data/data_eight_iterations.csv')
+df.demographics <- read.csv('../data/demographics_eight_iterations.csv')
+```
+
+## Clean the data
+
+```{r Clean the Data}
+# Remove the first two rows and rename the columns 
+df.data <- df.data[-c(1, 2), ] |> 
+  rename(
+    qualtrics_start_time = StartDate,
+    qualtrics_end_time = EndDate,
+    qualtrics_status = Status,
+    qualtrics_progress = Progress,
+    qualtrics_duration = Duration..in.seconds.,
+    completed_study = Finished,
+    survey_record_time = RecordedDate,
+    respond_ID = ResponseId,
+    distribution_channel = DistributionChannel,
+    user_language = UserLanguage,
+    recaptcha_score = Q_RecaptchaScore,
+    duplicate_status = Q_RelevantIDDuplicate,
+    duplicate_store = Q_RelevantIDDuplicateScore,
+    duplicate_fraud_score = Q_RelevantIDFraudScore,
+    duplicate_last_start_date = Q_RelevantIDLastStartDate,
+    browser = Metadata_Browser,
+    browser_version = Metadata_Version,
+    os = Metadata_Operating.System,
+    screen_resolution = Metadata_Resolution,
+    prolific_ID = ProlificID,
+    time_first_screen_click = Timer_First.Click,
+    time_last_screen_click = Timer_Last.Click,
+    time_video_submit = Timer_Page.Submit,
+    time_click_count = Timer_Click.Count,
+    attention_check = Attention_Check,
+    prediction_kitchen = Prediction_Kitchen,
+    prediction_nursery = Prediction_Nursery,
+    prediction_confidence = PredictionConfidence,
+    space_kitchen = Space_Kitchen,
+    space_nursery = Space_Nursery,
+    space_confidence = SpaceConfidence,
+    music_matching = Music_Room_Matching,
+    feedback = Feedback,
+    audio_test_rt = audio_test_rt,
+    audio_test_order = audio_test_order, 
+    unanswered_questions_percentage = Q_UnansweredPercentage, 
+    unanswered_questions = Q_UnansweredQuestions, 
+    straightlining_count = Q_StraightliningCount, 
+    straightlining_questions_percentage = Q_StraightliningPercentage, 
+    straightlining_questions = Q_StraightliningQuestions
+  )
+
+# Rename columns of the demographic data
+df.demographics <- df.demographics |> 
+  rename(
+    submission_ID = Submission.id,
+    prolific_ID = Participant.id,
+    prolific_status = Status,
+    custom_study_tncs_accepted_at = Custom.study.tncs.accepted.at,
+    prolific_start_time = Started.at,
+    prolific_end_time = Completed.at,
+    prolific_review_time = Reviewed.at,
+    prolific_archive_time = Archived.at,
+    prolific_duration = Time.taken,
+    completion_code = Completion.code,
+    total_approvals = Total.approvals,
+    fluent_languages = Fluent.languages,
+    vision = Vision,
+    colourblindness = Colourblindness,
+    hearing_difficulties = Hearing.difficulties,
+    age = Age,
+    sex = Sex,
+    ethnicity = Ethnicity.simplified,
+    country_of_birth = Country.of.birth,
+    country_of_residence = Country.of.residence,
+    nationality = Nationality,
+    language = Language,
+    student_status = Student.status,
+    employment_status = Employment.status
+  )
+
+# Merge the two datasets
+df.merge <- left_join(df.data, 
+                  df.demographics, 
+                  by = "prolific_ID")
+
+```
+
+## Run some checks
+
+```{r Run Checks}
+# Change the duplicate last start date to PST 
+df.merge <- df.merge |> 
+  mutate(
+    duplicate_last_start_date = ymd_hms(duplicate_last_start_date), 
+    duplicate_last_start_date_pst = with_tz(duplicate_last_start_date, 
+                                            tzone = "America/Los_Angeles")
+  )
+
+# Create a dataframe to check for merges 
+df.duplicates <- df.merge |> 
+  select(qualtrics_start_time,
+         duplicate_last_start_date_pst, 
+         prolific_ID,
+         total_approvals)
+
+```
+
+## Analyze data
+
+```{r Analyze Data}
+# Create dataframe for analysis, filter out low recaptcha scores, add path, and merge columns
+df.analysis <- df.merge |> 
+  select(prolific_ID,
+         attention_check,
+         prediction_kitchen,
+         prediction_nursery,
+         prediction_confidence,
+         space_kitchen,
+         space_nursery,
+         space_confidence,
+         music_matching,
+         time_first_screen_click,
+         time_last_screen_click,
+         time_video_submit,
+         time_click_count,
+         recaptcha_score, 
+         feedback) |> 
+  filter(recaptcha_score >= 0.5) |> 
+  mutate(
+    path = case_when(
+      # If prediction_kitchen is not empty or NA, set path to 1
+      str_trim(prediction_kitchen) != "" & !is.na(prediction_kitchen) ~ 1,
+      # If only prediction_nursery is not empty or NA, set path to 2
+      str_trim(prediction_nursery) != "" & !is.na(prediction_nursery) & str_trim(prediction_kitchen) == "" ~ 2,
+      # If neither column has a valid entry, set path to NA
+      TRUE ~ NA_real_
+    )
+  ) |> 
+  unite(prediction, prediction_kitchen, prediction_nursery, sep = "") |> 
+  unite(space, space_kitchen, space_nursery, sep = "") |> 
+  select(-recaptcha_score)
+
+# Add columns checking for prediction and space being correct
+df.analysis <- df.analysis |> 
+  mutate(
+    prediction_correct = ifelse(
+      (path == 1 & prediction == "Kitchen") | (path == 2 & prediction == "Nursery"), 
+      1, 
+      0
+    )
+  ) |> 
+  mutate(
+    space_correct = ifelse(
+      (path == 1 & space == "Nursery") | (path == 2 & space == "Kitchen"), 
+      1, 
+      0
+    )
+  ) |> 
+  mutate(
+    music_correct = ifelse(
+      music_matching == "Nursery", 1, 0
+    )
+  ) 
+```
+
+# No Exclusions
+
+## Figure out how many participants per path
+
+```{r Calculate Path Counts}
+path_counts <- table(df.analysis$path)
+print(path_counts)
+
+prediction_counts <- table(df.analysis$prediction_correct)
+print(prediction_counts)
+
+space_counts <- table(df.analysis$space_correct)
+print(space_counts)
+
+music_counts <- table(df.analysis$music_correct)
+print(music_counts)
+```
+
+## Visualize data
+
+```{r Visualize Prediction Data}
+# Calculate mean 
+mean_prediction_correct <- mean(df.analysis$prediction_correct)
+
+# Calculate se
+se_prediction_correct <- sd(df.analysis$prediction_correct) / sqrt(nrow(df.analysis))
+
+# Calculate CI
+ci_mean_lower_prediction_correct <- mean_prediction_correct - 1.96 * se_prediction_correct
+ci_mean_upper_prediction_correct <- mean_prediction_correct + 1.96 * se_prediction_correct
+
+ggplot(df.analysis, 
+       aes(x = factor(""), 
+           y = prediction_correct)) +
+  geom_jitter(width = 0.55, 
+              height = 0,
+              size = 2,
+              color = '#F28907',
+              fill = '#F2A413',
+              shape = 21) +
+  geom_point(aes(y = mean_prediction_correct), 
+             size = 5, 
+             color = '#F28907') +
+  geom_errorbar(aes(x = 1, 
+                    ymin = ci_mean_lower_prediction_correct, 
+                    ymax = ci_mean_upper_prediction_correct),
+                width = 0.05, 
+                color = '#F28907') +
+  geom_hline(yintercept = 0.33,
+             linetype = 'dotted') +
+  xlab('') +
+  ylab('Proportion correct answers') + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
+  theme_minimal() + 
+  theme(
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    text = element_text(family = "Avenir",
+                        size = 18)
+  )
+
+# Save the figure 
+# ggsave('figure_q1.png', dpi = 300, height = 6, width = 4)
+```
+
+```{r Visualize Space Data}
+# Calculate mean 
+mean_space_correct <- mean(df.analysis$space_correct)
+
+# Calculate se
+se_space_correct <- sd(df.analysis$space_correct) / sqrt(nrow(df.analysis))
+
+# Calculate CI
+ci_mean_lower_space_correct <- mean_space_correct - 1.96 * se_space_correct
+ci_mean_upper_space_correct <- mean_space_correct + 1.96 * se_space_correct
+
+ggplot(df.analysis, 
+       aes(x = factor(""), 
+           y = space_correct)) +
+  geom_jitter(width = 0.55, 
+              height = 0,
+              size = 2,
+              color = '#0339A6',
+              fill = '#0476D9',
+              shape = 21) +
+  geom_point(aes(y = mean_space_correct), 
+             size = 5, 
+             color = '#0339A6') +
+  geom_errorbar(aes(x = 1, 
+                    ymin = ci_mean_lower_space_correct, 
+                    ymax = ci_mean_upper_space_correct),
+                width = 0.05, 
+                color = '#0339A6') +
+  geom_hline(yintercept = 0.33,
+             linetype = 'dotted') +
+  xlab('') +
+  ylab('Proportion correct answers') + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
+  theme_minimal() + 
+  theme(
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    text = element_text(family = "Avenir",
+                        size = 18)
+  )
+
+# Save the figure 
+# ggsave('figure_q1.png', dpi = 300, height = 6, width = 4)
+```
+
+```{r Visualize Music Data}
+# Calculate mean 
+mean_music_correct <- mean(df.analysis$music_correct)
+
+# Calculate se
+se_music_correct <- sd(df.analysis$music_correct) / sqrt(nrow(df.analysis))
+
+# Calculate CI
+ci_mean_lower_music_correct <- mean_music_correct - 1.96 * se_music_correct
+ci_mean_upper_music_correct <- mean_music_correct + 1.96 * se_music_correct
+
+ggplot(df.analysis, 
+       aes(x = factor(""), 
+           y = music_correct)) +
+  geom_jitter(width = 0.55, 
+              height = 0,
+              size = 2,
+              color = '#228B22',
+              fill = '#32CD32',
+              shape = 21) +
+  geom_point(aes(y = mean_music_correct), 
+             size = 5, 
+             color = '#228B22') +
+  geom_errorbar(aes(x = 1, 
+                    ymin = ci_mean_lower_music_correct, 
+                    ymax = ci_mean_upper_music_correct),
+                width = 0.05, 
+                color = '#228B22') +
+  geom_hline(yintercept = 0.33,
+             linetype = 'dotted') +
+  xlab('') +
+  ylab('Proportion correct answers') + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
+  theme_minimal() + 
+  theme(
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    text = element_text(family = "Avenir",
+                        size = 18)
+  )
+
+# Save the figure 
+# ggsave('figure_q1.png', dpi = 300, height = 6, width = 4)
+```
+
+## Calculate statistics
+
+```{r Binary Choice for Prediction}
+prediction_num_correct <- sum(df.analysis$prediction_correct == 1)
+prediction_num_total <- nrow(df.analysis)
+
+prediction_binom_test <- binom.test(prediction_num_correct, 
+                                   prediction_num_total, 
+                                   p = 0.33, 
+                                   alternative = "greater")
+print(prediction_binom_test)
+```
+
+```{r Binary Choice for Space}
+space_num_correct <- sum(df.analysis$space_correct == 1)
+space_num_total <- nrow(df.analysis)
+
+space_binom_test <- binom.test(space_num_correct, 
+                                   space_num_total, 
+                                   p = 0.33, 
+                                   alternative = "greater")
+print(space_binom_test)
+```
+
+```{r Binary Choice for Music}
+music_num_correct <- sum(df.analysis$music_correct == 1)
+music_num_total <- nrow(df.analysis)
+
+music_binom_test <- binom.test(music_num_correct, 
+                                   music_num_total, 
+                                   p = 0.33, 
+                                   alternative = "greater")
+print(music_binom_test)
+```
+
+# Exclusions
+
+```{r Filter Exclusions}
+# Include only participants who passed the attention check 
+df.analysis_exclusions <- df.analysis |> 
+  filter(attention_check == 'Nursery,Kitchen,Garage') |> 
+  # Figure out which participants should not be analyzed based on confidence for prediction 
+  mutate(
+    prediction_analyze = ifelse(
+      prediction_confidence == "Very confident" | 
+      prediction_confidence == "Somewhat confident", #|
+      #prediction_confidence == "Somewhat unconfident", 
+      1, 0
+    )
+  ) |> 
+  # Figure out which participants should not be analyzed based on confidence for space 
+  mutate(
+    space_analyze = ifelse(
+      space_confidence == "Very confident" | 
+      space_confidence == "Somewhat confident", #|
+      #space_confidence == "Somewhat unconfident", 
+      1, 0
+    )
+  ) |> 
+  # Figure out which participants should not be analyzed based on attention (click time)
+  mutate(
+    time_analyze = ifelse(
+      time_video_submit < 672 & time_click_count < 10, 
+      1, 0
+    )
+  ) |> 
+  # Figure out which participants should not be analyzed based on leaving comments
+  mutate(
+    feedback_analyze = ifelse(
+      feedback>1, 
+      1, 0
+    )
+  )
+```
+
+```{r Filter Exclusions Lenient Attention Check}
+# Include only participants who passed the attention check 
+df.analysis_exclusions_lenient <- df.analysis |> 
+  filter(
+    grepl('Kitchen', attention_check) & 
+    grepl('Garage', attention_check) & 
+    sapply(strsplit(attention_check, ','), length) > 2
+  ) |> 
+  # Figure out which participants should not be analyzed based on confidence for prediction 
+  mutate(
+    prediction_analyze = ifelse(
+      prediction_confidence == "Very confident" | 
+      prediction_confidence == "Somewhat confident", #|
+      #prediction_confidence == "Somewhat unconfident", 
+      1, 0
+    )
+  ) |> 
+  # Figure out which participants should not be analyzed based on confidence for space 
+  mutate(
+    space_analyze = ifelse(
+      space_confidence == "Very confident" | 
+      space_confidence == "Somewhat confident", #|
+      #space_confidence == "Somewhat unconfident", 
+      1, 0
+    )
+  ) |> 
+  # Figure out which participants should not be analyzed based on attention 
+  mutate(
+    time_analyze = ifelse(
+      time_video_submit < 390 & time_click_count < 20, 
+      1, 0
+    )
+  ) |> 
+  # Figure out which participants should not be analyzed based on leaving comments
+  mutate(
+    feedback_analyze = ifelse(
+      feedback>1, 
+      1, 0
+    )
+  )
+  
+```
+
+## Figure out how many participants per path with exclusions
+
+```{r Calculate Path Counts with Exclusions}
+path_counts <- table(df.analysis_exclusions_lenient$path)
+print(path_counts)
+
+
+prediction_counts <- table(df.analysis_exclusions_lenient$prediction_correct)
+print(prediction_counts)
+
+space_counts <- table(df.analysis_exclusions_lenient$space_correct)
+print(space_counts)
+
+music_counts <- table(df.analysis_exclusions_lenient$music_correct)
+print(music_counts)
+
+
+prediction_counts <- table(df.analysis_exclusions_lenient$prediction_correct[df.analysis_exclusions_lenient$prediction_analyze == 1])
+print(prediction_counts)
+
+space_counts <- table(df.analysis_exclusions_lenient$space_correct[df.analysis_exclusions_lenient$space_analyze == 1])
+print(space_counts)
+
+
+prediction_counts <- table(df.analysis_exclusions_lenient$prediction_correct[df.analysis_exclusions_lenient$time_analyze == 1])
+print(prediction_counts)
+
+space_counts <- table(df.analysis_exclusions_lenient$space_correct[df.analysis_exclusions_lenient$time_analyze == 1])
+print(space_counts)
+
+music_counts <- table(df.analysis_exclusions_lenient$music_correct[df.analysis_exclusions_lenient$time_analyze == 1])
+print(music_counts)
+
+
+prediction_counts <- table(df.analysis_exclusions_lenient$prediction_correct[df.analysis_exclusions_lenient$feedback_analyze == 1])
+print(prediction_counts)
+
+space_counts <- table(df.analysis_exclusions_lenient$space_correct[df.analysis_exclusions_lenient$feedback_analyze == 1])
+print(space_counts)
+
+music_counts <- table(df.analysis_exclusions_lenient$music_correct[df.analysis_exclusions_lenient$feedback_analyze == 1])
+print(music_counts)
+
+
+prediction_confidence_counts <- table(df.analysis_exclusions_lenient$prediction_confidence)
+print(prediction_confidence_counts)
+
+space_confidence_counts <- table(df.analysis_exclusions_lenient$space_confidence)
+print(space_confidence_counts)
+```
+
+## Visualize data
+
+```{r Visualize Prediction Data with Exclusions}
+# Filter out participants not being considered for prediction 
+df.analysis_exclusions_prediction <- df.analysis_exclusions |> 
+  filter(prediction_analyze == 1)
+
+# Calculate mean 
+mean_prediction_correct_exclusions <- mean(df.analysis_exclusions_prediction$prediction_correct)
+
+# Calculate se
+se_prediction_correct_exclusions <- sd(df.analysis_exclusions_prediction$prediction_correct) / sqrt(nrow(df.analysis_exclusions_prediction))
+
+# Calculate CI
+ci_mean_lower_prediction_correct_exclusions <- mean_prediction_correct_exclusions - 1.96 * se_prediction_correct_exclusions
+ci_mean_upper_prediction_correct_exclusions <- mean_prediction_correct_exclusions + 1.96 * se_prediction_correct_exclusions
+
+ggplot(df.analysis_exclusions_prediction, 
+       aes(x = factor(""), 
+           y = prediction_correct)) +
+  geom_jitter(width = 0.55, 
+              height = 0,
+              size = 2,
+              color = '#F28907',
+              fill = '#F2A413',
+              shape = 21) +
+  geom_point(aes(y = mean_prediction_correct_exclusions), 
+             size = 5, 
+             color = '#F28907') +
+  geom_errorbar(aes(x = 1, 
+                    ymin = ci_mean_lower_prediction_correct_exclusions, 
+                    ymax = ci_mean_upper_prediction_correct_exclusions),
+                width = 0.05, 
+                color = '#F28907') +
+  geom_hline(yintercept = 0.33,
+             linetype = 'dotted') +
+  xlab('') +
+  ylab('Proportion correct answers') + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
+  theme_minimal() + 
+  theme(
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    text = element_text(family = "Avenir",
+                        size = 18)
+  )
+
+# Save the figure 
+# ggsave('figure_q1.png', dpi = 300, height = 6, width = 4)
+```
+
+```{r Visualize Space Data with Exclusions}
+# Filter out participants not being considered for space 
+df.analysis_exclusions_space <- df.analysis_exclusions |> 
+  filter(space_analyze == 1)
+
+# Calculate mean 
+mean_space_correct_exclusions <- mean(df.analysis_exclusions_space$space_correct)
+
+# Calculate se
+se_space_correct_exclusions <- sd(df.analysis_exclusions_space$space_correct) / sqrt(nrow(df.analysis_exclusions_space))
+
+# Calculate CI
+ci_mean_lower_space_correct_exclusions <- mean_space_correct_exclusions - 1.96 * se_space_correct_exclusions
+ci_mean_upper_space_correct_exclusions <- mean_space_correct_exclusions + 1.96 * se_space_correct_exclusions
+
+ggplot(df.analysis_exclusions_space, 
+       aes(x = factor(""), 
+           y = space_correct)) +
+  geom_jitter(width = 0.55, 
+              height = 0,
+              size = 2,
+              color = '#0339A6',
+              fill = '#0476D9',
+              shape = 21) +
+  geom_point(aes(y = mean_space_correct_exclusions), 
+             size = 5, 
+             color = '#0339A6') +
+  geom_errorbar(aes(x = 1, 
+                    ymin = ci_mean_lower_space_correct_exclusions, 
+                    ymax = ci_mean_upper_space_correct_exclusions),
+                width = 0.05, 
+                color = '#0339A6') +
+  geom_hline(yintercept = 0.33,
+             linetype = 'dotted') +
+  xlab('') +
+  ylab('Proportion correct answers') + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
+  theme_minimal() + 
+  theme(
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    text = element_text(family = "Avenir",
+                        size = 18)
+  )
+
+# Save the figure 
+# ggsave('figure_q1.png', dpi = 300, height = 6, width = 4)
+```
+
+```{r Visualize Music Data with Exclusions}
+# Calculate mean 
+mean_music_correct_exclusions <- mean(df.analysis_exclusions$music_correct)
+
+# Calculate se
+se_music_correct_exclusions <- sd(df.analysis_exclusions$music_correct) / sqrt(nrow(df.analysis_exclusions))
+
+# Calculate CI
+ci_mean_lower_music_correct_exclusions <- mean_music_correct_exclusions - 1.96 * se_music_correct_exclusions
+ci_mean_upper_music_correct_exclusions <- mean_music_correct_exclusions + 1.96 * se_music_correct_exclusions
+
+ggplot(df.analysis_exclusions, 
+       aes(x = factor(""), 
+           y = music_correct)) +
+  geom_jitter(width = 0.55, 
+              height = 0,
+              size = 2,
+              color = '#228B22',
+              fill = '#32CD32',
+              shape = 21) +
+  geom_point(aes(y = mean_music_correct_exclusions), 
+             size = 5, 
+             color = '#228B22') +
+  geom_errorbar(aes(x = 1, 
+                    ymin = ci_mean_lower_music_correct_exclusions, 
+                    ymax = ci_mean_upper_music_correct_exclusions),
+                width = 0.05, 
+                color = '#228B22') +
+  geom_hline(yintercept = 0.33,
+             linetype = 'dotted') +
+  xlab('') +
+  ylab('Proportion correct answers') + 
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
+  theme_minimal() + 
+  theme(
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(), 
+    axis.ticks.x = element_blank(), 
+    text = element_text(family = "Avenir",
+                        size = 18)
+  )
+
+# Save the figure 
+# ggsave('figure_q1.png', dpi = 300, height = 6, width = 4)
+```
+
+## Calculate statistics
+
+```{r Binary Choice for Prediction with Exclusions}
+prediction_num_correct_exclusions <- sum(df.analysis_exclusions_prediction$prediction_correct == 1)
+prediction_num_total_exclusions <- nrow(df.analysis_exclusions_prediction)
+
+prediction_binom_test_exclusions <- binom.test(prediction_num_correct_exclusions, 
+                                   prediction_num_total_exclusions, 
+                                   p = 0.33, 
+                                   alternative = "greater")
+print(prediction_binom_test_exclusions)
+```
+
+```{r Binary Choice for Space with Exclusions}
+space_num_correct_exclusions <- sum(df.analysis_exclusions_space$space_correct == 1)
+space_num_total_exclusions <- nrow(df.analysis_exclusions_space)
+
+space_binom_test_exclusions <- binom.test(space_num_correct_exclusions, 
+                                   space_num_total_exclusions, 
+                                   p = 0.33, 
+                                   alternative = "greater")
+print(space_binom_test_exclusions)
+```
+
+```{r Binary Choice for Music with Exclusions}
+music_num_correct_exclusions <- sum(df.analysis_exclusions$music_correct == 1)
+music_num_total_exclusions <- nrow(df.analysis_exclusions)
+
+music_binom_test_exclusions <- binom.test(music_num_correct_exclusions, 
+                                   music_num_total_exclusions, 
+                                   p = 0.33, 
+                                   alternative = "greater")
+print(music_binom_test_exclusions)
+```
